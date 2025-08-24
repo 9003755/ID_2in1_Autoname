@@ -3,6 +3,7 @@ import { Card, Upload, Button, Input, Space, Typography, Row, Col, message, Prog
 import { UploadOutlined, EyeOutlined, FileTextOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
 import type { UploadFile, UploadProps } from 'antd';
 import { OcrRequest, OcrResponse, PdfGenerateRequest, PdfGenerateResponse } from '../../shared/types';
+import { frontendOcrService } from '../services/frontendOcr';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -150,36 +151,47 @@ export default function SingleProcessMode() {
         currentStep: '正在识别身份证信息...'
       });
 
-      const formData = new FormData();
-      formData.append('image', file.originFileObj);
-      formData.append('type', 'front');
+      // 首先尝试后端OCR服务
+      try {
+        const formData = new FormData();
+        formData.append('image', file.originFileObj);
+        formData.append('type', 'front');
 
-      const response = await fetch('/api/ocr/identify', {
-        method: 'POST',
-        body: formData,
-      });
+        const response = await fetch('/api/ocr/identify', {
+          method: 'POST',
+          body: formData,
+        });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        if (response.ok) {
+          const result: OcrResponse = await response.json();
+          
+          if (result.success && result.name) {
+            setExtractedName(result.name);
+            message.success(`识别成功：${result.name}`);
+            return;
+          }
+        }
+      } catch (backendError) {
+        console.log('后端OCR服务不可用，尝试前端OCR:', backendError);
       }
 
-      const result: OcrResponse = await response.json();
+      // 后端OCR失败，使用前端OCR
+      setProcessing(prev => ({
+        ...prev,
+        currentStep: '后端服务不可用，正在使用前端OCR识别...'
+      }));
+
+      const idCardInfo = await frontendOcrService.recognizeIdCardFront(file.originFileObj);
       
-      if (result.success && result.name) {
-        setExtractedName(result.name);
-        message.success(`识别成功：${result.name}`);
+      if (idCardInfo.name) {
+        setExtractedName(idCardInfo.name);
+        message.success(`前端识别成功：${idCardInfo.name}`);
       } else {
-        const errorMsg = result.error || '未能识别到姓名';
-        message.warning(`${errorMsg}，请手动输入`);
-        console.warn('OCR识别结果:', result);
+        message.warning('未能识别到姓名，请手动输入');
       }
     } catch (error) {
       console.error('识别失败:', error);
-      if (error instanceof Error && error.message.includes('配置')) {
-        message.error('百度OCR服务未配置，请联系管理员配置API密钥');
-      } else {
-        message.error('识别失败，请手动输入姓名');
-      }
+      message.error('识别失败，请手动输入姓名');
     } finally {
       setProcessing({
         isProcessing: false,
