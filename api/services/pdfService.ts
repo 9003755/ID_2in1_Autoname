@@ -10,6 +10,7 @@ export interface PdfGenerationOptions {
   frontImagePath: string;
   backImagePath: string;
   name: string;
+  fileName?: string;
   outputDir: string;
   idCardInfo?: IdCardInfo;
 }
@@ -41,20 +42,32 @@ export class PdfService {
   async generateIdCardPdf(options: PdfGenerationOptions): Promise<PdfGenerationResult> {
     try {
       const { frontImagePath, backImagePath, name, outputDir, idCardInfo } = options;
+      
+      console.log('开始生成PDF:', { frontImagePath, backImagePath, name, outputDir });
 
       // 验证输入文件
       if (!fs.existsSync(frontImagePath)) {
-        throw new Error('身份证正面图片文件不存在');
+        const error = '身份证正面图片文件不存在';
+        console.error(error, frontImagePath);
+        throw new Error(error);
       }
       if (!fs.existsSync(backImagePath)) {
-        throw new Error('身份证反面图片文件不存在');
+        const error = '身份证反面图片文件不存在';
+        console.error(error, backImagePath);
+        throw new Error(error);
       }
 
       // 确保输出目录存在
-      ensureDirectoryExists(outputDir);
+      try {
+        ensureDirectoryExists(outputDir);
+        console.log('输出目录已确保存在:', outputDir);
+      } catch (dirError) {
+        console.error('创建输出目录失败:', dirError);
+        throw new Error('无法创建输出目录');
+      }
 
-      // 生成PDF文件名（简化格式，不包含时间戳）
-      const fileName = `${name}_身份证.pdf`;
+      // 生成PDF文件名（使用传入的fileName或默认格式：身份证姓名+身份证）
+      const fileName = options.fileName || `${name}身份证.pdf`;
       const outputPath = path.join(outputDir, fileName);
 
       // 创建PDF文档
@@ -116,31 +129,62 @@ export class PdfService {
         }
       }
 
-      // 计算图片位置（居中显示）
-      const frontImageDims = frontImage.scale(1);
-      const backImageDims = backImage.scale(1);
-
-      // 计算缩放比例以适应指定尺寸
-      const frontScale = Math.min(
-        PdfService.CARD_WIDTH / frontImageDims.width,
-        PdfService.CARD_HEIGHT / frontImageDims.height
-      );
-      const backScale = Math.min(
-        PdfService.CARD_WIDTH / backImageDims.width,
-        PdfService.CARD_HEIGHT / backImageDims.height
-      );
-
-      const frontScaledWidth = frontImageDims.width * frontScale;
-      const frontScaledHeight = frontImageDims.height * frontScale;
-      const backScaledWidth = backImageDims.width * backScale;
-      const backScaledHeight = backImageDims.height * backScale;
-
-      // 计算居中位置
-      const frontX = (PdfService.A4_WIDTH - frontScaledWidth) / 2;
-      const frontY = PdfService.A4_HEIGHT - PdfService.MARGIN - frontScaledHeight - 50;
+      // 计算图片尺寸和位置（智能缩放：只有超出PDF尺寸时才缩放）
+      const pageWidth = PdfService.A4_WIDTH;
+      const pageHeight = PdfService.A4_HEIGHT;
+      const margin = PdfService.MARGIN;
+      const maxWidth = pageWidth - 2 * margin;
+      const titleHeight = 80; // 标题区域高度
+      const infoHeight = idCardInfo ? 120 : 0; // 身份证信息区域高度
+      const availableHeight = pageHeight - 2 * margin - titleHeight - infoHeight;
+      const imageSpacing = 30; // 图片间距
       
-      const backX = (PdfService.A4_WIDTH - backScaledWidth) / 2;
-      const backY = frontY - backScaledHeight - 30;
+      // 首先检查两张图片原始尺寸是否能放入PDF
+      const totalOriginalHeight = frontImage.height + backImage.height + imageSpacing;
+      const maxOriginalWidth = Math.max(frontImage.width, backImage.width);
+      
+      // 判断是否需要缩放
+      const needsScaling = totalOriginalHeight > availableHeight || maxOriginalWidth > maxWidth;
+      
+      let frontScaledWidth, frontScaledHeight, backScaledWidth, backScaledHeight;
+      
+      if (needsScaling) {
+        // 需要缩放：计算缩放比例以适应页面
+        const maxImageHeight = (availableHeight - imageSpacing) / 2; // 每张图片的最大高度
+        
+        // 正面图片缩放
+        const frontScaleX = maxWidth / frontImage.width;
+        const frontScaleY = maxImageHeight / frontImage.height;
+        const frontScale = Math.min(frontScaleX, frontScaleY, 1); // 不放大，只缩小
+        frontScaledWidth = frontImage.width * frontScale;
+        frontScaledHeight = frontImage.height * frontScale;
+        
+        // 反面图片缩放
+        const backScaleX = maxWidth / backImage.width;
+        const backScaleY = maxImageHeight / backImage.height;
+        const backScale = Math.min(backScaleX, backScaleY, 1); // 不放大，只缩小
+        backScaledWidth = backImage.width * backScale;
+        backScaledHeight = backImage.height * backScale;
+        
+        console.log('身份证图片需要缩放以适应PDF尺寸');
+      } else {
+        // 不需要缩放：保持原始尺寸
+        frontScaledWidth = frontImage.width;
+        frontScaledHeight = frontImage.height;
+        backScaledWidth = backImage.width;
+        backScaledHeight = backImage.height;
+        
+        console.log('身份证图片保持原始尺寸，无需缩放');
+      }
+      
+      // 计算居中位置
+      const totalContentHeight = frontScaledHeight + backScaledHeight + imageSpacing;
+      const contentStartY = pageHeight - margin - titleHeight - (availableHeight - totalContentHeight) / 2;
+      
+      const frontX = (pageWidth - frontScaledWidth) / 2; // 水平居中
+      const frontY = contentStartY - frontScaledHeight; // 正面图片位置
+      const backX = (pageWidth - backScaledWidth) / 2; // 水平居中
+      const backY = frontY - imageSpacing - backScaledHeight; // 反面图片位置（在正面下方，留有间距）
 
       // 添加标题
       page.drawText('身份证信息', {
@@ -187,21 +231,43 @@ export class PdfService {
 
       // 如果有身份证信息，添加文字信息
       if (idCardInfo) {
-        this.addIdCardInfo(page, idCardInfo, backY - 50, chineseFont);
+        const infoStartY = backY - 30; // 在反面图片下方留30像素间距
+        this.addIdCardInfo(page, idCardInfo, infoStartY, chineseFont);
       }
 
       // 保存PDF
+      console.log('开始保存PDF到:', outputPath);
       const pdfBytes = await pdfDoc.save();
-      fs.writeFileSync(outputPath, pdfBytes);
-
-      return {
-        success: true,
-        filePath: outputPath,
-        fileName: fileName
-      };
+      
+      try {
+        fs.writeFileSync(outputPath, pdfBytes);
+        console.log('PDF保存成功:', outputPath);
+        
+        // 验证文件是否真的被创建
+        if (!fs.existsSync(outputPath)) {
+          throw new Error('PDF文件保存失败：文件未创建');
+        }
+        
+        const stats = fs.statSync(outputPath);
+        if (stats.size === 0) {
+          throw new Error('PDF文件保存失败：文件大小为0');
+        }
+        
+        console.log('PDF文件验证成功，大小:', stats.size, 'bytes');
+        
+        return {
+          success: true,
+          filePath: outputPath,
+          fileName: fileName
+        };
+      } catch (saveError) {
+        console.error('PDF保存失败:', saveError);
+        throw new Error('PDF文件保存失败: ' + (saveError instanceof Error ? saveError.message : '未知错误'));
+      }
 
     } catch (error) {
       console.error('PDF生成失败:', error);
+      console.error('错误堆栈:', error instanceof Error ? error.stack : 'No stack trace');
       return {
         success: false,
         error: error instanceof Error ? error.message : '未知错误'
@@ -290,20 +356,33 @@ export class PdfService {
   async generateSimplePdf(options: SimplePdfGenerationOptions): Promise<PdfGenerationResult> {
     try {
       const { image1Path, image2Path, fileName, outputDir } = options;
+      
+      console.log('开始生成简单PDF:', { image1Path, image2Path, fileName, outputDir });
 
       // 验证输入文件
       if (!fs.existsSync(image1Path)) {
-        throw new Error('第一张图片文件不存在');
+        const error = '第一张图片文件不存在';
+        console.error(error, image1Path);
+        throw new Error(error);
       }
       if (!fs.existsSync(image2Path)) {
-        throw new Error('第二张图片文件不存在');
+        const error = '第二张图片文件不存在';
+        console.error(error, image2Path);
+        throw new Error(error);
       }
 
       // 确保输出目录存在
-      ensureDirectoryExists(outputDir);
+      try {
+        ensureDirectoryExists(outputDir);
+        console.log('输出目录已确保存在:', outputDir);
+      } catch (dirError) {
+        console.error('创建输出目录失败:', dirError);
+        throw new Error('无法创建输出目录');
+      }
 
-      // 生成PDF文件名
-      const pdfFileName = fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`;
+      // 生成PDF文件名（格式：身份证姓名+身份证）
+      const baseName = fileName.endsWith('.pdf') ? fileName.slice(0, -4) : fileName;
+      const pdfFileName = `${baseName}身份证.pdf`;
       const outputPath = path.join(outputDir, pdfFileName);
 
       // 创建PDF文档
@@ -330,67 +409,110 @@ export class PdfService {
         }
       }
 
-      // 计算图片尺寸和位置（居中显示）
-      const image1Dims = image1.scale(1);
-      const image2Dims = image2.scale(1);
-
-      // 计算可用空间（为两张图片留出空间）
-      const availableHeight = PdfService.A4_HEIGHT - 2 * PdfService.MARGIN - 30; // 30为图片间距
-      const maxImageHeight = availableHeight / 2;
-      const maxImageWidth = PdfService.A4_WIDTH - 2 * PdfService.MARGIN;
-
-      // 计算第一张图片的缩放比例
-      const image1Scale = Math.min(
-        maxImageWidth / image1Dims.width,
-        maxImageHeight / image1Dims.height
-      );
-      const image1ScaledWidth = image1Dims.width * image1Scale;
-      const image1ScaledHeight = image1Dims.height * image1Scale;
-
-      // 计算第二张图片的缩放比例
-      const image2Scale = Math.min(
-        maxImageWidth / image2Dims.width,
-        maxImageHeight / image2Dims.height
-      );
-      const image2ScaledWidth = image2Dims.width * image2Scale;
-      const image2ScaledHeight = image2Dims.height * image2Scale;
-
-      // 计算第一张图片的居中位置（上半部分）
-      const image1X = (PdfService.A4_WIDTH - image1ScaledWidth) / 2;
-      const image1Y = PdfService.A4_HEIGHT - PdfService.MARGIN - image1ScaledHeight;
-
-      // 计算第二张图片的居中位置（下半部分）
-      const image2X = (PdfService.A4_WIDTH - image2ScaledWidth) / 2;
-      const image2Y = image1Y - image1ScaledHeight - 30 - image2ScaledHeight;
+      // 计算图片尺寸和位置（智能缩放：只有超出PDF尺寸时才缩放）
+      const pageWidth = PdfService.A4_WIDTH;
+      const pageHeight = PdfService.A4_HEIGHT;
+      const margin = PdfService.MARGIN;
+      const maxWidth = pageWidth - 2 * margin;
+      const availableHeight = pageHeight - 2 * margin;
+      const imageSpacing = 20; // 图片间距
+      
+      // 首先检查两张图片原始尺寸是否能放入PDF
+      const totalOriginalHeight = image1.height + image2.height + imageSpacing;
+      const maxOriginalWidth = Math.max(image1.width, image2.width);
+      
+      // 判断是否需要缩放
+      const needsScaling = totalOriginalHeight > availableHeight || maxOriginalWidth > maxWidth;
+      
+      let image1ScaledWidth, image1ScaledHeight, image2ScaledWidth, image2ScaledHeight;
+      
+      if (needsScaling) {
+        // 需要缩放：计算缩放比例以适应页面
+        const maxImageHeight = (availableHeight - imageSpacing) / 2; // 每张图片的最大高度
+        
+        // 第一张图片缩放
+        const firstScaleX = maxWidth / image1.width;
+        const firstScaleY = maxImageHeight / image1.height;
+        const firstScale = Math.min(firstScaleX, firstScaleY, 1); // 不放大，只缩小
+        image1ScaledWidth = image1.width * firstScale;
+        image1ScaledHeight = image1.height * firstScale;
+        
+        // 第二张图片缩放
+        const secondScaleX = maxWidth / image2.width;
+        const secondScaleY = maxImageHeight / image2.height;
+        const secondScale = Math.min(secondScaleX, secondScaleY, 1); // 不放大，只缩小
+        image2ScaledWidth = image2.width * secondScale;
+        image2ScaledHeight = image2.height * secondScale;
+        
+        console.log('图片需要缩放以适应PDF尺寸');
+      } else {
+        // 不需要缩放：保持原始尺寸
+        image1ScaledWidth = image1.width;
+        image1ScaledHeight = image1.height;
+        image2ScaledWidth = image2.width;
+        image2ScaledHeight = image2.height;
+        
+        console.log('图片保持原始尺寸，无需缩放');
+      }
+      
+      // 计算居中位置
+      const totalContentHeight = image1ScaledHeight + image2ScaledHeight + imageSpacing;
+      const startY = (pageHeight + totalContentHeight) / 2; // 垂直居中起始位置
+      
+      const image1X = (pageWidth - image1ScaledWidth) / 2; // 水平居中
+      const image1Y = startY - image1ScaledHeight; // 第一张图片位置
+      const image2X = (pageWidth - image2ScaledWidth) / 2; // 水平居中
+      const image2Y = image1Y - imageSpacing - image2ScaledHeight; // 第二张图片位置（在第一张下方，留有间距）
 
       // 绘制第一张图片
-      page.drawImage(image1, {
-        x: image1X,
-        y: image1Y,
-        width: image1ScaledWidth,
-        height: image1ScaledHeight,
-      });
+       page.drawImage(image1, {
+         x: image1X,
+         y: image1Y,
+         width: image1ScaledWidth,
+         height: image1ScaledHeight,
+       });
 
-      // 绘制第二张图片
-      page.drawImage(image2, {
-        x: image2X,
-        y: image2Y,
-        width: image2ScaledWidth,
-        height: image2ScaledHeight,
-      });
+       // 绘制第二张图片
+       page.drawImage(image2, {
+         x: image2X,
+         y: image2Y,
+         width: image2ScaledWidth,
+         height: image2ScaledHeight,
+       });
 
       // 保存PDF
+      console.log('开始保存简单PDF到:', outputPath);
       const pdfBytes = await pdfDoc.save();
-      fs.writeFileSync(outputPath, pdfBytes);
-
-      return {
-        success: true,
-        filePath: outputPath,
-        fileName: pdfFileName
-      };
+      
+      try {
+        fs.writeFileSync(outputPath, pdfBytes);
+        console.log('简单PDF保存成功:', outputPath);
+        
+        // 验证文件是否真的被创建
+        if (!fs.existsSync(outputPath)) {
+          throw new Error('PDF文件保存失败：文件未创建');
+        }
+        
+        const stats = fs.statSync(outputPath);
+        if (stats.size === 0) {
+          throw new Error('PDF文件保存失败：文件大小为0');
+        }
+        
+        console.log('简单PDF文件验证成功，大小:', stats.size, 'bytes');
+        
+        return {
+          success: true,
+          filePath: outputPath,
+          fileName: pdfFileName
+        };
+      } catch (saveError) {
+        console.error('简单PDF保存失败:', saveError);
+        throw new Error('PDF文件保存失败: ' + (saveError instanceof Error ? saveError.message : '未知错误'));
+      }
 
     } catch (error) {
       console.error('简单PDF生成失败:', error);
+      console.error('错误堆栈:', error instanceof Error ? error.stack : 'No stack trace');
       return {
         success: false,
         error: error instanceof Error ? error.message : '未知错误'

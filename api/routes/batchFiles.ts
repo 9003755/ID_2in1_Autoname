@@ -249,13 +249,17 @@ router.post('/process-files', upload, asyncHandler(async (req, res) => {
         );
 
         if (processResult.success) {
+          // 构建可访问的PDF下载URL
+          const pdfFileName = processResult.fileName;
+          const pdfDownloadUrl = `/api/pdf/download/${encodeURIComponent(pdfFileName!)}`;
+          
           const idCard: IdCardInfo = {
             id: `batch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
             name: processResult.extractedName || '',
             idNumber: '',
             frontImagePath: processResult.frontImagePath || '',
             backImagePath: processResult.backImagePath || '',
-            pdfPath: processResult.filePath
+            pdfPath: pdfDownloadUrl
           };
           const successResult: BatchResult = {
             folderPath: folder.folderName,
@@ -298,10 +302,34 @@ router.post('/process-files', upload, asyncHandler(async (req, res) => {
 
   } catch (error) {
     console.error('批处理失败:', error);
-    res.status(500).json({
-      success: false,
-      error: error instanceof Error ? error.message : '服务器内部错误'
-    });
+    
+    // 根据错误类型返回不同的状态码和错误信息
+    if (error instanceof Error) {
+      if (error.message.includes('百度OCR配置缺失')) {
+        res.status(503).json({ 
+          success: false, 
+          error: '服务配置错误：百度OCR配置缺失，请联系管理员',
+          details: error.message
+        });
+      } else if (error.message.includes('识别失败')) {
+        res.status(422).json({ 
+          success: false, 
+          error: '图片识别失败，请检查图片质量',
+          details: error.message
+        });
+      } else {
+        res.status(500).json({ 
+          success: false, 
+          error: '批量处理失败，请重试',
+          details: error.message
+        });
+      }
+    } else {
+      res.status(500).json({ 
+        success: false, 
+        error: '未知错误，请重试'
+      });
+    }
   }
 }));
 
@@ -361,126 +389,166 @@ async function processFolderFiles(
     
     console.log(`✅ 所有文件保存完成，共 ${savedFiles.length} 个文件`);
 
-    // 尝试识别身份证正面信息
-    console.log(`\n🔍 开始OCR识别身份证信息...`);
+    // 智能识别身份证正反面
+    console.log(`\n🔍 开始智能识别身份证正反面...`);
     let frontImagePath = '';
     let backImagePath = '';
     let extractedName = '';
     let idCardInfo: IdCardInfo | undefined;
 
-    // 尝试从图片中识别身份证信息
+    // 存储每张图片的识别结果
+    interface ImageRecognitionResult {
+      imagePath: string;
+      frontScore: number;
+      backScore: number;
+      frontInfo?: any;
+      backInfo?: any;
+      recommendedType: 'front' | 'back' | 'unknown';
+    }
+
+    const recognitionResults: ImageRecognitionResult[] = [];
+
+    // 对每张图片进行智能识别
     for (let i = 0; i < savedFiles.length; i++) {
       const imagePath = savedFiles[i];
       try {
-        console.log(`🔍 尝试识别图片 ${i + 1}/${savedFiles.length}: ${path.basename(imagePath)}`);
+        console.log(`🔍 智能识别图片 ${i + 1}/${savedFiles.length}: ${path.basename(imagePath)}`);
         const imageBuffer = fs.readFileSync(imagePath);
         console.log(`📄 图片大小: ${imageBuffer.length} bytes`);
         
-        // 尝试识别为身份证正面
-        console.log(`🤖 调用OCR服务识别身份证正面...`);
-        const frontResult = await ocrService.recognizeIdCardFront(imageBuffer);
-        console.log(`📋 OCR识别结果:`, {
-          name: frontResult.name,
-          hasName: !!frontResult.name
+        // 使用智能识别方法
+        console.log(`🤖 调用智能识别服务...`);
+        const smartResult = await ocrService.smartRecognizeIdCard(imageBuffer);
+        
+        recognitionResults.push({
+          imagePath,
+          frontScore: smartResult.frontScore,
+          backScore: smartResult.backScore,
+          frontInfo: smartResult.frontInfo,
+          backInfo: smartResult.backInfo,
+          recommendedType: smartResult.recommendedSide
         });
         
-        if (frontResult.name) {
-          frontImagePath = imagePath;
-          extractedName = frontResult.name;
-          idCardInfo = frontResult;
-          console.log(`✅ 成功识别到姓名: "${extractedName}"`);
-          console.log(`📸 正面图片: ${path.basename(frontImagePath)}`);
-          break;
-        } else {
-          console.log(`⚠️ 未识别到姓名，继续尝试下一张图片`);
-        }
+        console.log(`📊 识别结果: ${path.basename(imagePath)}`);
+         console.log(`  - 正面评分: ${smartResult.frontScore}`);
+         console.log(`  - 反面评分: ${smartResult.backScore}`);
+         console.log(`  - 推荐类型: ${smartResult.recommendedSide}`);
+         if (smartResult.frontInfo && smartResult.frontInfo.name) {
+           console.log(`  - 识别到姓名: "${smartResult.frontInfo.name}"`);
+         }
+         if (smartResult.backInfo && smartResult.backInfo.issueAuthority) {
+           console.log(`  - 识别到签发机关: "${smartResult.backInfo.issueAuthority}"`);
+         }
+         if (smartResult.backInfo && smartResult.backInfo.keywordDetection) {
+           console.log(`  - 关键字段检测: ${smartResult.backInfo.keywordDetection.detected ? '✅ 检测到' : '❌ 未检测到'}`);
+           if (smartResult.backInfo.keywordDetection.detected && smartResult.backInfo.keywordDetection.keywords.length > 0) {
+             console.log(`  - 检测到的关键词: ${smartResult.backInfo.keywordDetection.keywords.join(', ')}`);
+           }
+         }
+        
       } catch (error) {
-        // 继续尝试下一张图片
-        console.warn(`❌ 识别图片失败: ${path.basename(imagePath)}`, error instanceof Error ? error.message : error);
+        console.warn(`❌ 智能识别失败: ${path.basename(imagePath)}`, error instanceof Error ? error.message : error);
+        // 添加默认结果
+        recognitionResults.push({
+          imagePath,
+          frontScore: 0,
+          backScore: 0,
+          recommendedType: 'unknown'
+        });
       }
     }
 
-    // 如果没有识别到姓名，使用文件夹名称
-    if (!extractedName) {
-      console.log(`⚠️ 所有图片都未能识别到姓名，使用文件夹名称作为姓名`);
-      extractedName = folderName;
+    // 分析识别结果，选择最佳的正面和反面图片
+    console.log(`\n📊 分析识别结果...`);
+    
+    // 找到最佳正面图片
+    const frontCandidates = recognitionResults
+      .filter(result => result.recommendedType === 'front' || result.frontScore > 0)
+      .sort((a, b) => b.frontScore - a.frontScore);
+    
+    // 找到最佳反面图片
+    const backCandidates = recognitionResults
+      .filter(result => result.recommendedType === 'back' || result.backScore > 0)
+      .sort((a, b) => b.backScore - a.backScore);
+    
+    console.log(`📋 正面候选图片数量: ${frontCandidates.length}`);
+     frontCandidates.forEach((candidate, index) => {
+       console.log(`  ${index + 1}. ${path.basename(candidate.imagePath)} (评分: ${candidate.frontScore})`);
+     });
+     
+     console.log(`📋 反面候选图片数量: ${backCandidates.length}`);
+     backCandidates.forEach((candidate, index) => {
+       console.log(`  ${index + 1}. ${path.basename(candidate.imagePath)} (评分: ${candidate.backScore})`);
+     });
+    
+    // 选择正面图片和提取姓名
+    if (frontCandidates.length > 0) {
+      const bestFront = frontCandidates[0];
+      frontImagePath = bestFront.imagePath;
+      if (bestFront.frontInfo && bestFront.frontInfo.name) {
+        extractedName = bestFront.frontInfo.name;
+        idCardInfo = bestFront.frontInfo;
+      }
+      console.log(`✅ 选择正面图片: ${path.basename(frontImagePath)} (评分: ${bestFront.frontScore})`);
+      if (extractedName) {
+        console.log(`✅ 提取姓名: "${extractedName}"`);
+      }
+    }
+    
+    // 选择反面图片
+    if (backCandidates.length > 0) {
+      const bestBack = backCandidates[0];
+      // 确保反面图片不是正面图片
+      if (bestBack.imagePath !== frontImagePath) {
+        backImagePath = bestBack.imagePath;
+        console.log(`✅ 选择反面图片: ${path.basename(backImagePath)} (评分: ${bestBack.backScore})`);
+      } else {
+        // 如果最佳反面就是正面，选择第二个候选
+        const secondBest = backCandidates.find(candidate => candidate.imagePath !== frontImagePath);
+        if (secondBest) {
+          backImagePath = secondBest.imagePath;
+          console.log(`✅ 选择反面图片: ${path.basename(backImagePath)} (评分: ${secondBest.backScore}, 第二候选)`);
+        }
+      }
+    }
+    
+    // 如果没有找到合适的正面图片，使用传统方法
+    if (!frontImagePath) {
+      console.log(`⚠️ 智能识别未找到明确的正面图片，使用传统方法...`);
       frontImagePath = savedFiles[0];
-      console.log(`📝 使用姓名: "${extractedName}"`);
-      console.log(`📸 使用正面图片: ${path.basename(frontImagePath)}`);
+      extractedName = folderName;
+      console.log(`📸 使用第一张图片作为正面: ${path.basename(frontImagePath)}`);
+      console.log(`📝 使用文件夹名称作为姓名: "${extractedName}"`);
+    }
+    
+    // 如果没有找到合适的反面图片，选择剩余图片
+    if (!backImagePath) {
+      const remainingImages = savedFiles.filter(img => img !== frontImagePath);
+      if (remainingImages.length > 0) {
+        backImagePath = remainingImages[0];
+        console.log(`⚠️ 智能识别未找到明确的反面图片，使用剩余图片: ${path.basename(backImagePath)}`);
+      }
+    }
+    
+    // 如果仍然没有姓名，使用文件夹名称
+    if (!extractedName) {
+      extractedName = folderName;
+      console.log(`📝 使用文件夹名称作为姓名: "${extractedName}"`);
     }
 
-    // 验证并选择身份证反面图片
-    console.log(`\n🔍 开始验证身份证反面图片...`);
-    let validBackImagePath = '';
-    
-    // 遍历所有非正面图片，验证是否为有效的身份证反面
-    const candidateBackImages = savedFiles.filter(img => img !== frontImagePath);
-    console.log(`📋 候选反面图片数量: ${candidateBackImages.length}`);
-    
-    for (let i = 0; i < candidateBackImages.length; i++) {
-      const candidateImage = candidateBackImages[i];
-      try {
-        console.log(`🔍 验证候选反面图片 ${i + 1}/${candidateBackImages.length}: ${path.basename(candidateImage)}`);
-        const imageBuffer = fs.readFileSync(candidateImage);
-        console.log(`📄 图片大小: ${imageBuffer.length} bytes`);
-        
-        // 尝试识别为身份证反面
-        console.log(`🤖 调用OCR服务识别身份证反面...`);
-        const backResult = await ocrService.recognizeIdCardBack(imageBuffer);
-        console.log(`📋 反面OCR识别结果:`, {
-          issueAuthority: backResult.issueAuthority,
-          validPeriod: backResult.validPeriod,
-          hasIssueAuthority: !!backResult.issueAuthority
-        });
-        
-        // 验证是否包含身份证反面的关键信息（签发机关）
-        if (backResult.issueAuthority && backResult.issueAuthority.trim().length > 0) {
-          validBackImagePath = candidateImage;
-          console.log(`✅ 找到有效的身份证反面图片: ${path.basename(validBackImagePath)}`);
-          console.log(`🏛️ 签发机关: "${backResult.issueAuthority}"`);
-          if (backResult.validPeriod) {
-            console.log(`📅 有效期限: "${backResult.validPeriod}"`);
-          }
-          break;
-        } else {
-          console.log(`❌ 图片不是有效的身份证反面，未识别到签发机关`);
-        }
-      } catch (error) {
-        console.warn(`❌ 验证反面图片失败: ${path.basename(candidateImage)}`, error instanceof Error ? error.message : error);
-      }
+    // 验证是否有足够的图片生成PDF
+    if (!backImagePath) {
+      console.log(`❌ 错误: 未找到合适的反面图片`);
+      return {
+        success: false,
+        error: `文件夹 "${folderName}" 中未找到合适的身份证反面图片。请确保文件夹中包含清晰的身份证正面和反面图片。`
+      };
     }
     
-    // 如果没有找到有效的反面图片，使用备选方案
-    if (!validBackImagePath) {
-      console.log(`⚠️ 未找到有效的身份证反面图片`);
-      
-      // 检查是否有候选图片可用
-      if (candidateBackImages.length === 0) {
-        console.log(`❌ 错误: 文件夹中只有一张图片，无法生成完整的身份证PDF`);
-        return {
-          success: false,
-          error: `文件夹 "${folderName}" 中只有一张图片，无法生成完整的身份证PDF。请确保文件夹中包含身份证正面和反面图片。`
-        };
-      }
-      
-      // 记录详细的验证失败信息
-      console.log(`📊 验证失败统计:`);
-      console.log(`  - 总图片数量: ${savedFiles.length}`);
-      console.log(`  - 正面图片: ${path.basename(frontImagePath)}`);
-      console.log(`  - 候选反面图片数量: ${candidateBackImages.length}`);
-      candidateBackImages.forEach((img, index) => {
-        console.log(`    ${index + 1}. ${path.basename(img)} (验证失败)`);
-      });
-      
-      // 使用宽松模式：选择第一张候选图片作为反面
-      validBackImagePath = candidateBackImages[0];
-      console.log(`📸 使用宽松模式: 选择第一张候选图片作为反面: ${path.basename(validBackImagePath)}`);
-      console.log(`⚠️ 重要警告: 该图片未通过身份证反面验证，可能不是真正的身份证反面`);
-      console.log(`⚠️ 建议: 请检查生成的PDF，确认反面图片是否正确`);
-    }
-    
-    backImagePath = validBackImagePath;
-    console.log(`📸 最终选择的反面图片: ${path.basename(backImagePath)}`);
+    console.log(`\n📋 最终选择结果:`);
+    console.log(`📸 正面图片: ${path.basename(frontImagePath)}`);
+    console.log(`📸 反面图片: ${path.basename(backImagePath)}`);
+    console.log(`👤 提取姓名: "${extractedName}"`);
 
     // 生成PDF
     console.log(`\n📄 开始生成PDF文件...`);

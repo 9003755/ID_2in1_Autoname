@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { Card, Button, Input, Space, Typography, Table, Progress, message, Tag, Divider } from 'antd';
-import { FolderOpenOutlined, PlayCircleOutlined, DeleteOutlined, FileTextOutlined } from '@ant-design/icons';
+import { FolderOpenOutlined, PlayCircleOutlined, DeleteOutlined, FileTextOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { BatchResult, BatchSummary } from '../../shared/types';
+import JSZip from 'jszip';
 
 // FileSystem API 类型声明
 declare global {
@@ -34,7 +35,6 @@ interface ProcessingState {
 export default function BatchProcessMode() {
   const [folders, setFolders] = useState<FolderItem[]>([]);
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
-  const [outputPath, setOutputPath] = useState<string>('');
   const [folderInput, setFolderInput] = useState<string>('');
   const [processing, setProcessing] = useState<ProcessingState>({
     isProcessing: false,
@@ -44,6 +44,7 @@ export default function BatchProcessMode() {
     totalCount: 0
   });
   const [batchSummary, setBatchSummary] = useState<BatchSummary | null>(null);
+  const [pdfFiles, setPdfFiles] = useState<Array<{name: string, data: Blob}>>([]);
 
   // 读取文件夹中的所有图片文件
   const readFolderFiles = async (dirHandle: FileSystemDirectoryHandle): Promise<File[]> => {
@@ -121,6 +122,48 @@ export default function BatchProcessMode() {
     return files;
   };
 
+  // ZIP打包下载功能
+  const downloadZipFile = async () => {
+    if (pdfFiles.length === 0) {
+      message.error('没有可下载的PDF文件');
+      return;
+    }
+
+    try {
+      const zip = new JSZip();
+      
+      // 将所有PDF文件添加到ZIP中
+      pdfFiles.forEach(pdfFile => {
+        zip.file(pdfFile.name, pdfFile.data);
+      });
+      
+      // 生成ZIP文件
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      
+      // 创建下载链接
+      const url = URL.createObjectURL(zipBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      
+      // 生成带时间戳的文件名
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      link.download = `身份证批量处理结果_${timestamp}.zip`;
+      
+      // 触发下载
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      // 清理URL对象
+      URL.revokeObjectURL(url);
+      
+      message.success('ZIP文件下载成功！');
+    } catch (error) {
+      console.error('ZIP打包失败:', error);
+      message.error('ZIP打包失败，请重试');
+    }
+  };
+
   // 添加文件夹
   const addFolder = () => {
     if (!folderInput.trim()) {
@@ -189,10 +232,11 @@ export default function BatchProcessMode() {
       setIsLoadingFiles(false);
       console.error('选择文件夹失败:', error);
       if (error instanceof Error && error.name === 'AbortError') {
-        // 用户取消选择，不显示错误
+        // 用户取消选择，显示友好提示
+        message.info('已取消文件夹选择');
         return;
       }
-      message.error('选择文件夹失败');
+      message.error(`选择文件夹失败: ${error instanceof Error ? error.message : '请重试'}`);
     }
   };
 
@@ -268,20 +312,40 @@ export default function BatchProcessMode() {
     setFolders(prev => prev.filter(folder => folder.id !== id));
   };
 
-  // 选择输出路径
-  const selectOutputPath = async () => {
-    message.info('由于浏览器安全限制，请手动输入完整的输出路径，例如：C:\\Users\\用户名\\Documents\\输出文件夹');
+  // 重置所有状态
+  const resetAll = () => {
+    // 清理所有状态
+    setFolders([]);
+    setFolderInput('');
+    setBatchSummary(null);
+    setPdfFiles([]);
+    setProcessing({
+      isProcessing: false,
+      currentFolder: '',
+      progress: 0,
+      processedCount: 0,
+      totalCount: 0
+    });
+    setIsLoadingFiles(false);
+    
+    // 清理文件输入元素的值，确保可以重新选择相同文件
+    const fileInputs = document.querySelectorAll('input[type="file"]');
+    fileInputs.forEach(input => {
+      (input as HTMLInputElement).value = '';
+    });
+    
+    // 强制重新渲染
+    setTimeout(() => {
+      message.success('已重置，可以重新开始');
+    }, 100);
   };
+
+
 
   // 批量处理
   const startBatchProcess = async () => {
     if (folders.length === 0) {
       message.error('请添加要处理的文件夹');
-      return;
-    }
-
-    if (!outputPath.trim()) {
-      message.error('请选择输出路径');
       return;
     }
 
@@ -304,6 +368,7 @@ export default function BatchProcessMode() {
       // 重置文件夹状态
       setFolders(prev => prev.map(folder => ({ ...folder, status: 'pending' as const })));
       setBatchSummary(null);
+      setPdfFiles([]);
 
       setProcessing(prev => ({ ...prev, currentFolder: '正在准备文件...' }));
 
@@ -311,7 +376,7 @@ export default function BatchProcessMode() {
       const formData = new FormData();
       
       // 添加输出路径
-      formData.append('outputDir', outputPath);
+      
       
       // 创建文件夹结构信息（匹配后端期望的FolderFiles[]格式）
       const folderStructure: Array<{ folderName: string; files: string[] }> = [];
@@ -349,8 +414,68 @@ export default function BatchProcessMode() {
 
       const result = await response.json();
       
+      if (!response.ok) {
+        // 处理HTTP错误状态码
+        throw new Error(result.error || result.details || `服务器错误 (${response.status})`);
+      }
+      
       if (result.success) {
         const { results, summary } = result.data;
+        
+        // 收集成功生成的PDF文件
+        const generatedPdfs: Array<{name: string, data: Blob}> = [];
+        
+        console.log('开始收集PDF文件，批量处理结果:', results);
+        console.log('成功的结果数量:', results.filter((r: any) => r.success).length);
+        
+        for (const batchResult of results) {
+          console.log('处理批量结果:', {
+            success: batchResult.success,
+            hasIdCard: !!batchResult.idCard,
+            pdfPath: batchResult.idCard?.pdfPath,
+            folderPath: batchResult.folderPath
+          });
+          
+          if (batchResult.success && batchResult.idCard && batchResult.idCard.pdfPath) {
+            try {
+              console.log(`正在获取PDF文件: ${batchResult.idCard.pdfPath}`);
+              // 从服务器获取PDF文件
+              const pdfResponse = await fetch(batchResult.idCard.pdfPath);
+              console.log(`PDF响应状态: ${pdfResponse.status}`);
+              
+              if (pdfResponse.ok) {
+                const pdfBlob = await pdfResponse.blob();
+                // 使用后端返回的实际文件名，而不是文件夹名
+                const actualFileName = batchResult.idCard.fileName || `${batchResult.idCard.name}身份证.pdf`;
+                console.log(`成功获取PDF文件: ${actualFileName}, 大小: ${pdfBlob.size} bytes`);
+                generatedPdfs.push({
+                  name: actualFileName,
+                  data: pdfBlob
+                });
+              } else {
+                console.error(`PDF文件响应失败: ${pdfResponse.status} ${pdfResponse.statusText}`);
+              }
+            } catch (error) {
+              console.error(`获取PDF文件失败: ${batchResult.folderPath}`, error);
+            }
+          } else {
+            console.log('跳过此结果，原因:', {
+              success: batchResult.success,
+              hasIdCard: !!batchResult.idCard,
+              hasPdfPath: !!(batchResult.idCard?.pdfPath)
+            });
+          }
+        }
+        
+        console.log(`收集到的PDF文件数量: ${generatedPdfs.length}`);
+        console.log('PDF文件列表:', generatedPdfs.map(pdf => ({ name: pdf.name, size: pdf.data.size })));
+        
+        setPdfFiles(generatedPdfs);
+        
+        // 立即检查状态更新
+        setTimeout(() => {
+          console.log('状态更新后的pdfFiles长度:', generatedPdfs.length);
+        }, 100);
         
         // 更新文件夹状态和结果
         setFolders(prev => prev.map(folder => {
@@ -378,7 +503,18 @@ export default function BatchProcessMode() {
       }
     } catch (error) {
       console.error('批处理失败:', error);
-      message.error(error instanceof Error ? error.message : '批处理失败');
+      
+      let errorMessage = '批处理失败';
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      
+      // 如果是网络错误，尝试解析响应中的错误信息
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        errorMessage = '网络连接失败，请检查服务器是否正常运行';
+      }
+      
+      message.error(errorMessage);
       setProcessing({
         isProcessing: false,
         currentFolder: '',
@@ -471,8 +607,8 @@ export default function BatchProcessMode() {
           <ul className="text-sm text-blue-700 space-y-1 mb-0">
             <li>• 点击"添加文件夹"选择包含身份证图片的文件夹，可以逐一添加多个文件夹</li>
             <li>• 每个文件夹必须包含同一人的身份证正反面图片，否则会出错</li>
-            <li>• 因浏览器安全限制，需手动输入完整的输出路径，例如C:\Users\用户名\Documents\pdf输出文件夹</li>
-            <li>• 系统会直接读取文件夹中的图片文件进行处理</li>
+            <li>• 点击"开始批量处理"按钮开始处理所有文件夹</li>
+            <li>• 处理完成后，点击"下载ZIP压缩包"按钮下载所有生成的PDF文件</li>
           </ul>
         </div>
         
@@ -531,26 +667,7 @@ export default function BatchProcessMode() {
           </Text>
         </div>
 
-        {/* 输出路径 */}
-        <div>
-          <Title level={5}>输出路径</Title>
-          <Space.Compact className="w-full">
-            <Input
-              value={outputPath}
-              onChange={(e) => setOutputPath(e.target.value)}
-              placeholder="请选择或输入PDF保存路径"
-              size="large"
-            />
-            <Button
-              icon={<FolderOpenOutlined />}
-              onClick={selectOutputPath}
-              size="large"
-              disabled={processing.isProcessing}
-            >
-              选择文件夹
-            </Button>
-          </Space.Compact>
-        </div>
+
 
         {/* 文件夹列表 */}
         {folders.length > 0 && (
@@ -620,19 +737,43 @@ export default function BatchProcessMode() {
           </div>
         )}
 
-        {/* 开始处理按钮 */}
+        {/* 操作按钮 */}
         <div className="text-center">
-          <Button
-            type="primary"
-            size="large"
-            icon={<PlayCircleOutlined />}
-            onClick={startBatchProcess}
-            loading={processing.isProcessing}
-            disabled={folders.length === 0 || !outputPath.trim()}
-            className="px-8"
-          >
-            {processing.isProcessing ? '处理中...' : '开始批量处理'}
-          </Button>
+          <Space size="large">
+            <Button
+               type="primary"
+               size="large"
+               icon={<PlayCircleOutlined />}
+               onClick={startBatchProcess}
+               loading={processing.isProcessing}
+               disabled={folders.length === 0}
+               className="px-8"
+             >
+              {processing.isProcessing ? '处理中...' : '开始批量处理'}
+            </Button>
+            
+            {pdfFiles.length > 0 && (
+              <Button 
+                type="default" 
+                size="large"
+                icon={<DownloadOutlined />}
+                onClick={downloadZipFile}
+                disabled={processing.isProcessing}
+              >
+                下载ZIP压缩包 ({pdfFiles.length}个文件)
+              </Button>
+            )}
+            
+            <Button 
+              icon={<ReloadOutlined />}
+              onClick={resetAll}
+              disabled={processing.isProcessing}
+              size="large"
+              className="px-6"
+            >
+              重置
+            </Button>
+          </Space>
         </div>
       </Space>
     </Card>

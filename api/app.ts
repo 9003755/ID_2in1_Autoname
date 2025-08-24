@@ -7,7 +7,6 @@ import cors from 'cors';
 import path from 'path';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
-import authRoutes from './routes/auth.js';
 import ocrRoutes from './routes/ocr.js';
 import pdfRoutes from './routes/pdf.js';
 import batchRoutes from './routes/batch.js';
@@ -35,7 +34,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 /**
  * API Routes
  */
-app.use('/api/auth', authRoutes);
 app.use('/api/ocr', ocrRoutes);
 app.use('/api/pdf', pdfRoutes);
 app.use('/api/batch', batchRoutes);

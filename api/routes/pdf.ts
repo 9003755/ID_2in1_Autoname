@@ -262,4 +262,201 @@ router.get('/download/:fileName', asyncHandler(async (req, res) => {
   }
 }));
 
+/**
+ * POST /api/pdf/download
+ * 生成PDF并返回文件数据用于下载
+ */
+router.post('/download', 
+  upload.fields([{ name: 'front', maxCount: 1 }, { name: 'back', maxCount: 1 }]),
+  handleMulterError,
+  validateRequiredFields(['name']),
+  validateFileUpload(['front', 'back']),
+  asyncHandler(async (req, res) => {
+    const tempFiles: string[] = [];
+    
+    try {
+      const { name, fileName, idCardInfo } = req.body;
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+      
+      const frontFile = files.front?.[0];
+      const backFile = files.back?.[0];
+
+      if (!frontFile || !backFile) {
+        return res.status(400).json({
+          success: false,
+          error: '请上传身份证正反面照片'
+        });
+      }
+
+      // 验证文件格式
+      const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png'];
+      if (!allowedMimeTypes.includes(frontFile.mimetype) || 
+          !allowedMimeTypes.includes(backFile.mimetype)) {
+        return res.status(400).json({
+          success: false,
+          error: '只支持JPEG和PNG格式的图片文件'
+        });
+      }
+
+      // 保存上传的图片到临时目录
+      const tempDir = getTempDir();
+      const frontTempPath = path.join(tempDir, generateUniqueFileName('front', '.jpg'));
+      const backTempPath = path.join(tempDir, generateUniqueFileName('back', '.jpg'));
+      
+      fs.writeFileSync(frontTempPath, frontFile.buffer);
+      fs.writeFileSync(backTempPath, backFile.buffer);
+      tempFiles.push(frontTempPath, backTempPath);
+
+      // 准备PDF生成选项
+      const pdfOptions: PdfGenerationOptions = {
+        frontImagePath: frontTempPath,
+        backImagePath: backTempPath,
+        name: name,
+        outputDir: tempDir,
+        idCardInfo: idCardInfo ? JSON.parse(idCardInfo) as IdCardInfo : undefined,
+        fileName: fileName // 如果前端提供了fileName，则使用它
+      };
+
+      // 生成PDF
+      const pdfService = new PdfService();
+      const result = await pdfService.generateIdCardPdf(pdfOptions);
+
+      if (!result.success) {
+        return res.status(500).json({
+          success: false,
+          error: result.error || 'PDF生成失败'
+        });
+      }
+
+      // 读取PDF文件并返回
+      const pdfBuffer = fs.readFileSync(result.filePath!);
+      const resultFileName = result.fileName!;
+      
+      // 设置响应头
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(resultFileName)}"`);
+      
+      // 返回PDF文件
+      res.send(pdfBuffer);
+
+      // 清理生成的PDF文件
+      setTimeout(() => {
+        if (fs.existsSync(result.filePath!)) {
+          fs.unlinkSync(result.filePath!);
+        }
+      }, 1000);
+
+    } catch (error) {
+      console.error('PDF生成失败:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : '服务器内部错误'
+      });
+    } finally {
+      // 清理临时文件
+      if (tempFiles.length > 0) {
+        setTimeout(() => {
+          PdfService.cleanupTempFiles(tempFiles);
+        }, 5000); // 5秒后清理临时文件
+      }
+    }
+  })
+);
+
+/**
+ * POST /api/pdf/simple-download
+ * 简单合并两张图片为PDF并返回文件数据用于下载
+ */
+router.post('/simple-download', 
+  upload.fields([{ name: 'first', maxCount: 1 }, { name: 'second', maxCount: 1 }]),
+  handleMulterError,
+  validateRequiredFields(['fileName']),
+  validateFileUpload(['first', 'second']),
+  asyncHandler(async (req, res) => {
+    const tempFiles: string[] = [];
+    
+    try {
+      const { fileName } = req.body;
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+      
+      const firstFile = files.first?.[0];
+      const secondFile = files.second?.[0];
+
+      if (!firstFile || !secondFile) {
+        return res.status(400).json({
+          success: false,
+          error: '请上传两张图片'
+        });
+      }
+
+      // 验证文件格式
+      const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png'];
+      if (!allowedMimeTypes.includes(firstFile.mimetype) || 
+          !allowedMimeTypes.includes(secondFile.mimetype)) {
+        return res.status(400).json({
+          success: false,
+          error: '只支持JPEG和PNG格式的图片文件'
+        });
+      }
+
+      // 保存上传的图片到临时目录
+      const tempDir = getTempDir();
+      const firstTempPath = path.join(tempDir, generateUniqueFileName('first', '.jpg'));
+      const secondTempPath = path.join(tempDir, generateUniqueFileName('second', '.jpg'));
+      
+      fs.writeFileSync(firstTempPath, firstFile.buffer);
+      fs.writeFileSync(secondTempPath, secondFile.buffer);
+      tempFiles.push(firstTempPath, secondTempPath);
+      
+      // 生成PDF
+      const pdfService = new PdfService();
+      const result = await pdfService.generateSimplePdf({
+        image1Path: firstTempPath,
+        image2Path: secondTempPath,
+        fileName: fileName,
+        outputDir: tempDir
+      });
+
+      if (!result.success) {
+        return res.status(500).json({
+          success: false,
+          error: result.error || 'PDF生成失败'
+        });
+      }
+
+      // 读取PDF文件并返回
+      const pdfBuffer = fs.readFileSync(result.filePath!);
+      const finalFileName = result.fileName!;
+      
+      // 设置响应头
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(finalFileName)}"`);
+      
+      // 返回PDF文件
+      res.send(pdfBuffer);
+
+      // 清理生成的PDF文件
+      setTimeout(() => {
+        if (fs.existsSync(result.filePath!)) {
+          fs.unlinkSync(result.filePath!);
+        }
+      }, 1000);
+
+    } catch (error) {
+      console.error('简单PDF生成失败:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : '服务器内部错误'
+      });
+    } finally {
+      // 清理临时文件
+      if (tempFiles.length > 0) {
+        setTimeout(() => {
+          PdfService.cleanupTempFiles(tempFiles);
+        }, 5000); // 5秒后清理临时文件
+      }
+    }
+  })
+);
+
 export default router;

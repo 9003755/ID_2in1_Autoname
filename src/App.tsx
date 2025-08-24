@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
-import Home from "@/pages/Home";
+import Home from "./pages/Home";
 
 // 获取basename，在GitHub Pages部署时使用仓库名，本地开发时为空
 const basename = import.meta.env.PROD ? '/ID_2in1_Autoname' : '/ID_2in1_Autoname';

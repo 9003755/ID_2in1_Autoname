@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Card, Upload, Button, Input, Space, Typography, Row, Col, message, Progress } from 'antd';
-import { UploadOutlined, EyeOutlined, FolderOpenOutlined, FileTextOutlined } from '@ant-design/icons';
+import { UploadOutlined, EyeOutlined, DownloadOutlined, FileTextOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { UploadFile, UploadProps } from 'antd';
 
 const { Title, Text } = Typography;
@@ -16,8 +16,9 @@ export default function SimpleProcessMode() {
     first: null,
     second: null
   });
-  const [outputPath, setOutputPath] = useState<string>('');
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
   const [pdfFileName, setPdfFileName] = useState<string>('');
+  const [uploadKey, setUploadKey] = useState<number>(0); // 用于强制重新渲染Upload组件
   const [processing, setProcessing] = useState<ProcessingState>({
     isProcessing: false,
     progress: 0,
@@ -60,80 +61,123 @@ export default function SimpleProcessMode() {
     }));
   };
 
-  // 选择保存路径
-  const selectOutputPath = async () => {
-    try {
-      // 使用文件系统API选择文件夹
-      if ('showDirectoryPicker' in window) {
-        const dirHandle = await (window as any).showDirectoryPicker();
-        setOutputPath(dirHandle.name);
-        message.success('保存路径已选择');
-      } else {
-        // 降级方案：手动输入路径
-        message.info('请手动输入保存路径');
-      }
-    } catch (error) {
-      console.error('选择路径失败:', error);
+  // 下载PDF文件
+  const downloadPdf = () => {
+    if (!pdfBlob || !pdfFileName) {
+      message.error('没有可下载的PDF文件');
+      return;
     }
+
+    try {
+      const url = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${pdfFileName}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      message.success('PDF文件下载成功');
+    } catch (error) {
+      console.error('下载失败:', error);
+      message.error('下载失败，请重试');
+    }
+  };
+
+  // 获取目录完整路径的辅助函数
+  const getDirectoryPath = async (directoryHandle: any): Promise<string> => {
+    try {
+      // 尝试多种方法获取完整路径
+      if (directoryHandle.resolve) {
+        const path = await directoryHandle.resolve();
+        if (Array.isArray(path)) {
+          return path.join('\\');
+        }
+      }
+      
+      // 尝试通过queryPermission获取路径信息
+      if (directoryHandle.queryPermission) {
+        await directoryHandle.queryPermission({ mode: 'readwrite' });
+      }
+      
+      // 如果有name属性，尝试构建路径
+      if (directoryHandle.name) {
+        // 在Windows系统中，通常选择的是完整路径
+        // 但API只返回文件夹名称，我们需要提示用户
+        console.log('选择的文件夹:', directoryHandle.name);
+        return directoryHandle.name;
+      }
+      
+      return '未知路径';
+    } catch (error) {
+      console.warn('无法获取完整路径:', error);
+      return directoryHandle.name || '未知路径';
+    }
+  };
+
+  // 手动重置所有状态
+  const resetAll = () => {
+    // 清理所有状态
+    setImages({ first: null, second: null });
+    setPdfFileName('');
+    setPdfBlob(null);
+    setProcessing({ isProcessing: false, progress: 0, currentStep: '' });
+    
+    // 强制重新渲染Upload组件
+    setUploadKey(prev => prev + 1);
+    
+    // 清理所有可能的URL对象
+    const imgElements = document.querySelectorAll('img[src^="blob:"]');
+    imgElements.forEach(img => {
+      URL.revokeObjectURL((img as HTMLImageElement).src);
+    });
+    
+    message.success('已重置，可以重新开始');
   };
 
   // 生成PDF
   const generatePdf = async () => {
-    if (!images.first?.originFileObj || !images.second?.originFileObj) {
-      message.error('请上传两张图片');
-      return;
-    }
+    if (images.first?.originFileObj && images.second?.originFileObj && pdfFileName.trim()) {
+      try {
+        setProcessing({
+          isProcessing: true,
+          progress: 20,
+          currentStep: '正在上传文件...'
+        });
 
-    if (!pdfFileName.trim()) {
-      message.error('请输入PDF文件名');
-      return;
-    }
+        const formData = new FormData();
+        formData.append('first', images.first.originFileObj);
+        formData.append('second', images.second.originFileObj);
+        formData.append('fileName', pdfFileName);
 
-    if (!outputPath.trim()) {
-      message.error('请选择保存路径');
-      return;
-    }
+        setProcessing(prev => ({ ...prev, progress: 60, currentStep: '正在生成PDF...' }));
 
-    try {
-      setProcessing({
-        isProcessing: true,
-        progress: 20,
-        currentStep: '正在上传文件...'
-      });
+        const response = await fetch('/api/pdf/simple-download', {
+          method: 'POST',
+          body: formData,
+        });
 
-      const formData = new FormData();
-      formData.append('first', images.first.originFileObj);
-      formData.append('second', images.second.originFileObj);
-      formData.append('fileName', pdfFileName);
-      formData.append('outputPath', outputPath);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
 
-      setProcessing(prev => ({ ...prev, progress: 60, currentStep: '正在生成PDF...' }));
-
-      const response = await fetch('/api/pdf/simple-generate', {
-        method: 'POST',
-        body: formData,
-      });
-
-      const result = await response.json();
-      
-      if (result.success) {
-        setProcessing(prev => ({ ...prev, progress: 100, currentStep: '生成完成！' }));
-        message.success(`PDF生成成功：${result.filePath}`);
+        const blob = await response.blob();
+        setPdfBlob(blob);
         
-        // 重置表单
+        setProcessing(prev => ({ ...prev, progress: 100, currentStep: 'PDF生成完成！点击下载按钮下载文件' }));
+        message.success('PDF生成成功，可以下载了');
+        
+        // 停止处理状态，但保持成功状态显示
         setTimeout(() => {
-          setImages({ first: null, second: null });
-          setPdfFileName('');
-          setOutputPath('');
-          setProcessing({ isProcessing: false, progress: 0, currentStep: '' });
-        }, 2000);
-      } else {
-        throw new Error(result.error || 'PDF生成失败');
+          setProcessing(prev => ({ ...prev, isProcessing: false }));
+        }, 1000);
+      } catch (error) {
+        console.error('生成PDF失败:', error);
+        message.error(error instanceof Error ? error.message : 'PDF生成失败');
+        setProcessing({ isProcessing: false, progress: 0, currentStep: '' });
       }
-    } catch (error) {
-      console.error('生成PDF失败:', error);
-      message.error(error instanceof Error ? error.message : 'PDF生成失败');
-      setProcessing({ isProcessing: false, progress: 0, currentStep: '' });
+    } else {
+      message.error('请确保已上传两张图片并输入文件名');
     }
   };
 
@@ -143,7 +187,7 @@ export default function SimpleProcessMode() {
         {/* 照片上传区域 */}
         <Card size="small" title="图片上传">
           <div className="text-center mb-4">
-            <Upload {...uploadProps} onChange={handleImageUpload}>
+            <Upload key={uploadKey} {...uploadProps} onChange={handleImageUpload}>
               <Button icon={<UploadOutlined />} size="large" className="mb-4">
                 选择图片（可同时选择两张）
               </Button>
@@ -224,25 +268,21 @@ export default function SimpleProcessMode() {
           />
         </div>
 
-        {/* 保存路径 */}
-        <div>
-          <Title level={5}>保存路径</Title>
-          <Space.Compact className="w-full">
-            <Input
-              value={outputPath}
-              onChange={(e) => setOutputPath(e.target.value)}
-              placeholder="请选择或输入保存路径"
+        {/* 下载区域 */}
+        {pdfBlob && (
+          <div>
+            <Title level={5}>下载PDF</Title>
+            <Button 
+              icon={<DownloadOutlined />} 
+              onClick={downloadPdf}
+              type="primary"
               size="large"
-            />
-            <Button
-              icon={<FolderOpenOutlined />}
-              onClick={selectOutputPath}
-              size="large"
+              className="w-full"
             >
-              选择文件夹
+              下载PDF文件
             </Button>
-          </Space.Compact>
-        </div>
+          </div>
+        )}
 
         {/* 进度显示 */}
         {processing.isProcessing && (
@@ -254,17 +294,28 @@ export default function SimpleProcessMode() {
 
         {/* 生成按钮 */}
         <div className="text-center">
-          <Button
-            type="primary"
-            size="large"
-            icon={<FileTextOutlined />}
-            onClick={generatePdf}
-            loading={processing.isProcessing}
-            disabled={!images.first || !images.second || !pdfFileName.trim() || !outputPath.trim()}
-            className="px-8"
-          >
-            生成PDF
-          </Button>
+          <Space size="large">
+            <Button
+              type="primary"
+              size="large"
+              icon={<FileTextOutlined />}
+              onClick={generatePdf}
+              loading={processing.isProcessing}
+              disabled={!images.first || !images.second || !pdfFileName.trim()}
+              className="px-8"
+            >
+              生成PDF
+            </Button>
+            <Button 
+              icon={<ReloadOutlined />}
+              onClick={resetAll}
+              disabled={processing.isProcessing}
+              size="large"
+              className="px-6"
+            >
+              重置
+            </Button>
+          </Space>
         </div>
       </Space>
     </Card>

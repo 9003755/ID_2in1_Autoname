@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Card, Upload, Button, Input, Space, Typography, Row, Col, message, Progress } from 'antd';
-import { UploadOutlined, EyeOutlined, FolderOpenOutlined, FileTextOutlined } from '@ant-design/icons';
+import { UploadOutlined, EyeOutlined, FileTextOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
 import type { UploadFile, UploadProps } from 'antd';
 import { OcrRequest, OcrResponse, PdfGenerateRequest, PdfGenerateResponse } from '../../shared/types';
 
@@ -18,13 +18,73 @@ export default function SingleProcessMode() {
     front: null,
     back: null
   });
-  const [outputPath, setOutputPath] = useState<string>('');
   const [extractedName, setExtractedName] = useState<string>('');
   const [processing, setProcessing] = useState<ProcessingState>({
     isProcessing: false,
     progress: 0,
     currentStep: ''
   });
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
+  const [pdfFileName, setPdfFileName] = useState<string>('');
+  const [uploadKey, setUploadKey] = useState<number>(0); // 用于强制重新渲染Upload组件
+  const resetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 清理定时器
+  useEffect(() => {
+    return () => {
+      if (resetTimeoutRef.current) {
+        clearTimeout(resetTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // 重置表单
+  const resetForm = () => {
+    // 清理所有状态
+    setImages({ front: null, back: null });
+    setExtractedName('');
+    setPdfBlob(null);
+    setPdfFileName('');
+    setProcessing({ isProcessing: false, progress: 0, currentStep: '' });
+    
+    // 清理可能存在的定时器
+    if (resetTimeoutRef.current) {
+      clearTimeout(resetTimeoutRef.current);
+      resetTimeoutRef.current = null;
+    }
+    
+    // 强制重新渲染
+    setTimeout(() => {
+      message.success('表单已重置，可以重新开始');
+    }, 100);
+  };
+
+  // 手动重置功能
+  const handleManualReset = () => {
+    // 清理所有状态
+    setImages({ front: null, back: null });
+    setExtractedName('');
+    setPdfBlob(null);
+    setPdfFileName('');
+    setProcessing({ isProcessing: false, progress: 0, currentStep: '' });
+    
+    // 清理可能存在的定时器
+    if (resetTimeoutRef.current) {
+      clearTimeout(resetTimeoutRef.current);
+      resetTimeoutRef.current = null;
+    }
+    
+    // 强制重新渲染Upload组件
+    setUploadKey(prev => prev + 1);
+    
+    // 清理所有可能的URL对象
+    const imgElements = document.querySelectorAll('img[src^="blob:"]');
+    imgElements.forEach(img => {
+      URL.revokeObjectURL((img as HTMLImageElement).src);
+    });
+    
+    message.success('已重置，可以重新开始');
+  };
 
   // 文件上传配置
   const uploadProps: UploadProps = {
@@ -99,17 +159,27 @@ export default function SingleProcessMode() {
         body: formData,
       });
 
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
       const result: OcrResponse = await response.json();
       
       if (result.success && result.name) {
         setExtractedName(result.name);
         message.success(`识别成功：${result.name}`);
       } else {
-        message.warning('未能识别到姓名，请手动输入');
+        const errorMsg = result.error || '未能识别到姓名';
+        message.warning(`${errorMsg}，请手动输入`);
+        console.warn('OCR识别结果:', result);
       }
     } catch (error) {
       console.error('识别失败:', error);
-      message.error('识别失败，请手动输入姓名');
+      if (error instanceof Error && error.message.includes('配置')) {
+        message.error('百度OCR服务未配置，请联系管理员配置API密钥');
+      } else {
+        message.error('识别失败，请手动输入姓名');
+      }
     } finally {
       setProcessing({
         isProcessing: false,
@@ -119,22 +189,30 @@ export default function SingleProcessMode() {
     }
   };
 
-  // 选择保存路径
-  const selectOutputPath = async () => {
+  // 下载PDF文件
+  const downloadPdf = () => {
+    if (!pdfBlob || !pdfFileName) {
+      message.error('没有可下载的PDF文件');
+      return;
+    }
+
     try {
-      // 使用文件系统API选择文件夹
-      if ('showDirectoryPicker' in window) {
-        const dirHandle = await (window as any).showDirectoryPicker();
-        setOutputPath(dirHandle.name);
-        message.success('保存路径已选择');
-      } else {
-        // 降级方案：手动输入路径
-        message.info('请手动输入保存路径');
-      }
+      const url = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${pdfFileName}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      message.success('PDF文件下载成功');
     } catch (error) {
-      console.error('选择路径失败:', error);
+      console.error('下载失败:', error);
+      message.error('下载失败，请重试');
     }
   };
+
+
 
   // 生成PDF
   const generatePdf = async () => {
@@ -145,11 +223,6 @@ export default function SingleProcessMode() {
 
     if (!extractedName.trim()) {
       message.error('请输入姓名');
-      return;
-    }
-
-    if (!outputPath.trim()) {
-      message.error('请选择保存路径');
       return;
     }
 
@@ -164,31 +237,31 @@ export default function SingleProcessMode() {
       formData.append('front', images.front.originFileObj);
       formData.append('back', images.back.originFileObj);
       formData.append('name', extractedName);
-      formData.append('outputPath', outputPath);
+      // 添加fileName字段以确保PDF文件名正确生成
+      formData.append('fileName', `${extractedName}身份证.pdf`);
 
       setProcessing(prev => ({ ...prev, progress: 60, currentStep: '正在生成PDF...' }));
 
-      const response = await fetch('/api/pdf/generate', {
+      const response = await fetch('/api/pdf/download', {
         method: 'POST',
         body: formData,
       });
 
-      const result: PdfGenerateResponse = await response.json();
-      
-      if (result.success) {
-        setProcessing(prev => ({ ...prev, progress: 100, currentStep: '生成完成！' }));
-        message.success(`PDF生成成功：${result.filePath}`);
-        
-        // 重置表单
-        setTimeout(() => {
-          setImages({ front: null, back: null });
-          setExtractedName('');
-          setOutputPath('');
-          setProcessing({ isProcessing: false, progress: 0, currentStep: '' });
-        }, 2000);
-      } else {
-        throw new Error(result.error || 'PDF生成失败');
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
+
+      const blob = await response.blob();
+      setPdfBlob(blob);
+      setPdfFileName(`${extractedName}身份证`);
+      
+      setProcessing(prev => ({ ...prev, progress: 100, currentStep: 'PDF生成完成！点击下载按钮下载文件' }));
+      message.success('PDF生成成功，可以下载了');
+      
+      // 停止处理状态，但保持成功状态显示
+      setTimeout(() => {
+        setProcessing(prev => ({ ...prev, isProcessing: false }));
+      }, 1000);
     } catch (error) {
       console.error('生成PDF失败:', error);
       message.error(error instanceof Error ? error.message : 'PDF生成失败');
@@ -202,7 +275,7 @@ export default function SingleProcessMode() {
         {/* 照片上传区域 */}
         <Card size="small" title="身份证照片上传">
           <div className="text-center mb-4">
-            <Upload {...uploadProps} onChange={handleImageUpload}>
+            <Upload key={uploadKey} {...uploadProps} onChange={handleImageUpload}>
               <Button icon={<UploadOutlined />} size="large" className="mb-4">
                 选择身份证照片（可同时选择正反面）
               </Button>
@@ -292,25 +365,21 @@ export default function SingleProcessMode() {
           />
         </div>
 
-        {/* 保存路径 */}
-        <div>
-          <Title level={5}>保存路径</Title>
-          <Space.Compact className="w-full">
-            <Input
-              value={outputPath}
-              onChange={(e) => setOutputPath(e.target.value)}
-              placeholder="请选择或输入保存路径"
+        {/* 下载区域 */}
+        {pdfBlob && (
+          <div>
+            <Title level={5}>下载PDF文件</Title>
+            <Button 
+              icon={<DownloadOutlined />} 
+              onClick={downloadPdf}
+              type="primary"
               size="large"
-            />
-            <Button
-              icon={<FolderOpenOutlined />}
-              onClick={selectOutputPath}
-              size="large"
+              className="w-full"
             >
-              选择文件夹
+              下载PDF文件
             </Button>
-          </Space.Compact>
-        </div>
+          </div>
+        )}
 
         {/* 进度显示 */}
         {processing.isProcessing && (
@@ -322,17 +391,28 @@ export default function SingleProcessMode() {
 
         {/* 生成按钮 */}
         <div className="text-center">
-          <Button
-            type="primary"
-            size="large"
-            icon={<FileTextOutlined />}
-            onClick={generatePdf}
-            loading={processing.isProcessing}
-            disabled={!images.front || !images.back || !extractedName.trim() || !outputPath.trim()}
-            className="px-8"
-          >
-            生成PDF
-          </Button>
+          <Space size="large">
+            <Button
+              type="primary"
+              size="large"
+              icon={<FileTextOutlined />}
+              onClick={generatePdf}
+              loading={processing.isProcessing}
+              disabled={!images.front || !images.back || !extractedName.trim()}
+              className="px-8"
+            >
+              生成PDF
+            </Button>
+            <Button 
+              icon={<ReloadOutlined />}
+              onClick={handleManualReset}
+              disabled={processing.isProcessing}
+              size="large"
+              className="px-6"
+            >
+              重置
+            </Button>
+          </Space>
         </div>
       </Space>
     </Card>
