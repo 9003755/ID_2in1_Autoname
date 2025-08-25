@@ -9,6 +9,18 @@
   },
   "rewrites": [
     {
+      "source": "/api/pdf/simple-download",
+      "destination": "/api/pdf/simple-download.ts"
+    },
+    {
+      "source": "/api/ocr/identify",
+      "destination": "/api/ocr/identify.ts"
+    },
+    {
+      "source": "/api/pdf/download",
+      "destination": "/api/pdf/download.ts"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     },
