@@ -9,6 +9,14 @@
   },
   "rewrites": [
     {
+      "source": "/api/debug/vercel-env-test",
+      "destination": "/api/debug/vercel-env-test.ts"
+    },
+    {
+      "source": "/api/debug/ocr-debug",
+      "destination": "/api/debug/ocr-debug.ts"
+    },
+    {
       "source": "/api/pdf/simple-download",
       "destination": "/api/pdf/simple-download.ts"
     },
