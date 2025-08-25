@@ -7,12 +7,12 @@ import cors from 'cors';
 import path from 'path';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
-import ocrRoutes from './routes/ocr.js';
-import pdfRoutes from './routes/pdf.js';
-import batchRoutes from './routes/batch.js';
-import batchFilesRoutes from './routes/batchFiles.js';
-import { handleMulterError } from './middleware/validation.js';
-import { initDirectories } from './utils/fileUtils.js';
+import ocrRoutes from './routes/ocr';
+import pdfRoutes from './routes/pdf';
+import batchRoutes from './routes/batch';
+import batchFilesRoutes from './routes/batchFiles';
+import { handleMulterError } from './middleware/validation';
+import { initDirectories } from './utils/fileUtils';
 
 // for esm mode
 const __filename = fileURLToPath(import.meta.url);

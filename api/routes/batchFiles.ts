@@ -5,7 +5,7 @@ import fs from 'fs';
 import { asyncHandler } from '../middleware/validation';
 import { getTempDir } from '../utils/fileUtils';
 import { BatchResult, BatchSummary, IdCardInfo, PdfGenerationOptions } from '../../shared/types';
-import { getBaiduOcrService, BaiduOcrService } from '../services/baiduOcr.js';
+import { getBaiduOcrService, BaiduOcrService } from '../services/baiduOcr';
 import { PdfService } from '../services/pdfService';
 
 const router = express.Router();

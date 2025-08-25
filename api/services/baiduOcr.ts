@@ -1,4 +1,4 @@
-import { IdCardInfo } from '../../shared/types.js';
+import { IdCardInfo } from '../../shared/types';
 
 /**
  * 百度OCR服务类

@@ -1,8 +1,8 @@
 import express, { Request, Response } from 'express';
 import multer from 'multer';
-import { OcrRequest, OcrResponse } from '../../shared/types.js';
-import { getBaiduOcrService } from '../services/baiduOcr.js';
-import { asyncHandler, handleMulterError } from '../middleware/validation.js';
+import { OcrRequest, OcrResponse } from '../../shared/types';
+import { getBaiduOcrService } from '../services/baiduOcr';
+import { asyncHandler, handleMulterError } from '../middleware/validation';
 
 const router = express.Router();
 
