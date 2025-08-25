@@ -521,6 +521,183 @@ export class PdfService {
   }
 
   /**
+   * 从buffer生成身份证PDF
+   */
+  async createIdCardPdfFromBuffers(
+    frontImageBuffer: Buffer,
+    backImageBuffer: Buffer,
+    name: string
+  ): Promise<Buffer> {
+    try {
+      console.log(`开始从buffer生成PDF: 姓名=${name}, 正面大小=${frontImageBuffer.length}, 反面大小=${backImageBuffer.length}`);
+
+      // 创建PDF文档
+      const pdfDoc = await PDFDocument.create();
+      
+      // 注册fontkit以支持自定义字体
+      pdfDoc.registerFontkit(fontkit);
+      
+      // 尝试嵌入中文字体
+      let chineseFont;
+      try {
+        // 尝试使用系统字体路径（Windows）
+        const fontPaths = [
+          'C:/Windows/Fonts/simhei.ttf',  // 黑体
+          'C:/Windows/Fonts/simsun.ttc',  // 宋体
+          'C:/Windows/Fonts/msyh.ttc',    // 微软雅黑
+          'C:/Windows/Fonts/simkai.ttf'   // 楷体
+        ];
+        
+        let fontBytes = null;
+        for (const fontPath of fontPaths) {
+          if (fs.existsSync(fontPath)) {
+            fontBytes = fs.readFileSync(fontPath);
+            break;
+          }
+        }
+        
+        if (fontBytes) {
+          chineseFont = await pdfDoc.embedFont(fontBytes);
+        } else {
+          // 如果没有找到系统字体，使用标准字体
+          console.warn('未找到中文字体，使用标准字体');
+          chineseFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        }
+      } catch (error) {
+        console.warn('字体加载失败，使用标准字体:', error);
+        chineseFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      }
+      
+      const page = pdfDoc.addPage([PdfService.A4_WIDTH, PdfService.A4_HEIGHT]);
+
+      // 嵌入图片到PDF
+      let frontImage, backImage;
+      try {
+        // 尝试作为JPEG处理
+        frontImage = await pdfDoc.embedJpg(frontImageBuffer);
+        backImage = await pdfDoc.embedJpg(backImageBuffer);
+      } catch {
+        try {
+          // 如果JPEG失败，尝试作为PNG处理
+          frontImage = await pdfDoc.embedPng(frontImageBuffer);
+          backImage = await pdfDoc.embedPng(backImageBuffer);
+        } catch (error) {
+          throw new Error('不支持的图片格式，请使用JPEG或PNG格式');
+        }
+      }
+
+      // 计算图片尺寸和位置（智能缩放：只有超出PDF尺寸时才缩放）
+      const pageWidth = PdfService.A4_WIDTH;
+      const pageHeight = PdfService.A4_HEIGHT;
+      const margin = PdfService.MARGIN;
+      const maxWidth = pageWidth - 2 * margin;
+      const titleHeight = 80; // 标题区域高度
+      const availableHeight = pageHeight - 2 * margin - titleHeight;
+      const imageSpacing = 30; // 图片间距
+      
+      // 首先检查两张图片原始尺寸是否能放入PDF
+      const totalOriginalHeight = frontImage.height + backImage.height + imageSpacing;
+      const maxOriginalWidth = Math.max(frontImage.width, backImage.width);
+      
+      // 判断是否需要缩放
+      const needsScaling = totalOriginalHeight > availableHeight || maxOriginalWidth > maxWidth;
+      
+      let frontScaledWidth, frontScaledHeight, backScaledWidth, backScaledHeight;
+      
+      if (needsScaling) {
+        // 需要缩放：计算缩放比例以适应页面
+        const maxImageHeight = (availableHeight - imageSpacing) / 2; // 每张图片的最大高度
+        
+        // 正面图片缩放
+        const frontScaleX = maxWidth / frontImage.width;
+        const frontScaleY = maxImageHeight / frontImage.height;
+        const frontScale = Math.min(frontScaleX, frontScaleY, 1); // 不放大，只缩小
+        frontScaledWidth = frontImage.width * frontScale;
+        frontScaledHeight = frontImage.height * frontScale;
+        
+        // 反面图片缩放
+        const backScaleX = maxWidth / backImage.width;
+        const backScaleY = maxImageHeight / backImage.height;
+        const backScale = Math.min(backScaleX, backScaleY, 1); // 不放大，只缩小
+        backScaledWidth = backImage.width * backScale;
+        backScaledHeight = backImage.height * backScale;
+        
+        console.log('身份证图片需要缩放以适应PDF尺寸');
+      } else {
+        // 不需要缩放：保持原始尺寸
+        frontScaledWidth = frontImage.width;
+        frontScaledHeight = frontImage.height;
+        backScaledWidth = backImage.width;
+        backScaledHeight = backImage.height;
+        
+        console.log('身份证图片保持原始尺寸，无需缩放');
+      }
+      
+      // 计算居中位置
+      const totalContentHeight = frontScaledHeight + backScaledHeight + imageSpacing;
+      const contentStartY = pageHeight - margin - titleHeight - (availableHeight - totalContentHeight) / 2;
+      
+      const frontX = (pageWidth - frontScaledWidth) / 2; // 水平居中
+      const frontY = contentStartY - frontScaledHeight; // 正面图片位置
+      const backX = (pageWidth - backScaledWidth) / 2; // 水平居中
+      const backY = frontY - imageSpacing - backScaledHeight; // 反面图片位置（在正面下方，留有间距）
+
+      // 添加标题
+      page.drawText('身份证信息', {
+        x: (PdfService.A4_WIDTH - 100) / 2,
+        y: PdfService.A4_HEIGHT - 30,
+        size: 16,
+        color: rgb(0, 0, 0),
+        font: chineseFont,
+      });
+
+      // 添加正面标签
+      page.drawText('正面:', {
+        x: frontX,
+        y: frontY + frontScaledHeight + 10,
+        size: 12,
+        color: rgb(0, 0, 0),
+        font: chineseFont,
+      });
+
+      // 绘制正面图片
+      page.drawImage(frontImage, {
+        x: frontX,
+        y: frontY,
+        width: frontScaledWidth,
+        height: frontScaledHeight,
+      });
+
+      // 添加反面标签
+      page.drawText('反面:', {
+        x: backX,
+        y: backY + backScaledHeight + 10,
+        size: 12,
+        color: rgb(0, 0, 0),
+        font: chineseFont,
+      });
+
+      // 绘制反面图片
+      page.drawImage(backImage, {
+        x: backX,
+        y: backY,
+        width: backScaledWidth,
+        height: backScaledHeight,
+      });
+
+      // 生成PDF字节
+      const pdfBytes = await pdfDoc.save();
+      
+      console.log(`PDF生成成功，大小: ${pdfBytes.length} bytes`);
+      
+      return Buffer.from(pdfBytes);
+    } catch (error) {
+      console.error('从buffer生成PDF失败:', error);
+      throw new Error(`PDF生成失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  }
+
+  /**
    * 清理临时文件
    */
   static async cleanupTempFiles(filePaths: string[]): Promise<void> {

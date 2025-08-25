@@ -32,3 +32,4 @@ temp/
 *.sln
 *.sw?
 .vite
+.vercel

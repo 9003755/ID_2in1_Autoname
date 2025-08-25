@@ -1,12 +1,21 @@
 {
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/**/*.ts": {
+      "runtime": "nodejs20.x",
+      "maxDuration": 30
+    }
+  },
   "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/index"
-    },
     {
       "source": "/(.*)",
       "destination": "/index.html"
     }
-  ]
+  ],
+  "env": {
+    "BAIDU_APP_ID": "119840131",
+    "BAIDU_API_KEY": "WLSdDFtDY2NFhbgyLBaJcJOu",
+    "BAIDU_SECRET_KEY": "XZKzd14HDHkkzpblkTNVoYcWuEd8G5qN"
+  }
 }
